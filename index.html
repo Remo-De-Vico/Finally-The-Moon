@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Lunar Space</title>
+<script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js" } }
+</script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #00000a; font-family: 'Courier New', monospace; }
+
+  #hud {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.25);
+    font-size: 10px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  #trackLabel {
+    position: absolute;
+    top: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0);
+    font-size: 11px;
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    transition: color 1.2s ease;
+    pointer-events: none;
+    text-align: center;
+    white-space: nowrap;
+  }
+  #trackLabel.visible { color: rgba(255,255,255,0.65); }
+
+  #crosshair {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%,-50%);
+    pointer-events: none;
+    width: 14px; height: 14px;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ''; position: absolute; background: rgba(255,255,255,0.3);
+  }
+  #crosshair::before { width: 1px; height: 100%; left: 50%; top: 0; }
+  #crosshair::after  { height: 1px; width: 100%; top: 50%; left: 0; }
+
+  /* Player overlay — dimensioni esatte per embed Bandcamp large (350×470) */
+  #playerOverlay {
+    display: none;
+    position: absolute;
+    top: 50%;
+    right: 32px;
+    transform: translateY(-50%);
+    width: 350px;
+    /* header 38px + iframe 470px = 508px totali */
+    background: rgba(0,0,5,0.92);
+    border: 1px solid rgba(255,255,255,0.13);
+    z-index: 20;
+    box-shadow:
+      0 0 40px rgba(120,140,255,0.08),
+      0 0 100px rgba(80,80,200,0.05);
+    animation: fadeSlide 0.5s ease forwards;
+  }
+  @keyframes fadeSlide {
+    from { opacity: 0; transform: translateY(calc(-50% + 14px)); }
+    to   { opacity: 1; transform: translateY(-50%); }
+  }
+
+  #playerHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    height: 38px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+  }
+  #trackNum {
+    color: rgba(255,255,255,0.3);
+    font-size: 9px;
+    letter-spacing: 3px;
+  }
+  #closeBtn {
+    background: none;
+    border: 1px solid rgba(255,255,255,0.18);
+    color: rgba(255,255,255,0.38);
+    cursor: pointer;
+    font-size: 9px;
+    letter-spacing: 2px;
+    font-family: 'Courier New', monospace;
+    padding: 3px 8px;
+    transition: all 0.2s;
+  }
+  #closeBtn:hover { color: #fff; border-color: rgba(255,255,255,0.7); }
+
+  /* iframe esattamente 350×470 = dimensione standard embed Bandcamp large */
+  #bcPlayer {
+    border: 0;
+    width: 350px;
+    height: 470px;
+    display: block;
+  }
+
+  #autoplayNotice {
+    display: none;
+    position: absolute;
+    bottom: 58px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.4);
+    font-size: 10px;
+    letter-spacing: 3px;
+    pointer-events: none;
+    animation: blink 1.5s ease infinite;
+    white-space: nowrap;
+  }
+  @keyframes blink {
+    0%,100% { opacity: 0.5; }
+    50%      { opacity: 0.08; }
+  }
+</style>
+</head>
+<body>
+
+<div id="crosshair"></div>
+<div id="trackLabel"></div>
+<div id="hud"></div>
+<script>
+  const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  document.getElementById('hud').innerHTML = isMobile
+    ? 'swipe — guarda &nbsp;·&nbsp; doppio tap — avanza'
+    : 'click — abilita mouse &nbsp;·&nbsp; muovi mouse — guarda &nbsp;·&nbsp; tieni clic — avanza &nbsp;·&nbsp; W A S D / ← → — muoviti &nbsp;·&nbsp; spazio — play';
+</script>
+<div id="autoplayNotice">▶ premi spazio per avviare la traccia</div>
+
+<div id="playerOverlay">
+  <div id="playerHeader">
+    <span id="trackNum">TRACK 01 / 11</span>
+    <button id="closeBtn">CHIUDI ✕</button>
+  </div>
+  <iframe id="bcPlayer" src="" seamless allow="autoplay; encrypted-media"></iframe>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+// ════════════════════════════════
+//  SCENE BASE
+// ════════════════════════════════
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x00000a);
+scene.fog = new THREE.FogExp2(0x00000a, 0.003);
+
+const camera = new THREE.PerspectiveCamera(68, innerWidth/innerHeight, 0.1, 3000);
+camera.position.set(0, 4, 50);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+// ════════════════════════════════
+//  STELLE — 3 LAYER ONIRICI
+// ════════════════════════════════
+function starTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0,    'rgba(255,255,255,1)');
+  g.addColorStop(0.15, 'rgba(255,255,255,0.9)');
+  g.addColorStop(0.4,  'rgba(255,255,255,0.3)');
+  g.addColorStop(1,    'rgba(255,255,255,0)');
+  x.fillStyle = g; x.fillRect(0,0,64,64);
+  return new THREE.CanvasTexture(c);
+}
+const sTex = starTexture();
+
+function makeStarField({ count, spread, minSize, maxSize, color, opacity }) {
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    // distribuzione sferica uniforme
+    const u = Math.random(), v = Math.random();
+    const theta = 2 * Math.PI * u;
+    const phi   = Math.acos(2 * v - 1);
+    const r     = spread * Math.cbrt(Math.random()); // cbrt = più dense al centro
+    pos[i*3]   = r * Math.sin(phi) * Math.cos(theta);
+    pos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+    pos[i*3+2] = r * Math.cos(phi);
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    color, size: minSize + Math.random() * (maxSize - minSize),
+    map: sTex, sizeAttenuation: true,
+    transparent: true, opacity,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  return new THREE.Points(geo, mat);
+}
+
+// Via Lattea di fondo: moltissime stelle piccole
+const stars1 = makeStarField({ count: 7000, spread: 2200, minSize: 0.8, maxSize: 1.6, color: 0xc8d4ff, opacity: 0.75 });
+// Stelle medie con tono caldo
+const stars2 = makeStarField({ count: 2000, spread: 1400, minSize: 1.4, maxSize: 2.8, color: 0xffe4c0, opacity: 0.65 });
+// Stelle grandi vicine, brillanti
+const stars3 = makeStarField({ count: 380,  spread: 700,  minSize: 3.0, maxSize: 7.0, color: 0xffffff, opacity: 0.95 });
+
+scene.add(stars1, stars2, stars3);
+
+// Nebula volumetrica — due nuvole di particelle colorate sfumate
+function makeNebula(count, spread, colorA, colorB, pSize, opacity) {
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(count * 3);
+  const col = new Float32Array(count * 3);
+  const ca  = new THREE.Color(colorA), cb = new THREE.Color(colorB);
+  for (let i = 0; i < count; i++) {
+    // distribuzione appiattita (nebula è più orizzontale)
+    pos[i*3]   = (Math.random()-0.5) * spread;
+    pos[i*3+1] = (Math.random()-0.5) * spread * 0.3;
+    pos[i*3+2] = (Math.random()-0.5) * spread;
+    const t = Math.random();
+    col[i*3]   = ca.r*(1-t) + cb.r*t;
+    col[i*3+1] = ca.g*(1-t) + cb.g*t;
+    col[i*3+2] = ca.b*(1-t) + cb.b*t;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({
+    size: pSize, vertexColors: true,
+    transparent: true, opacity,
+    depthWrite: false, blending: THREE.AdditiveBlending,
+    sizeAttenuation: true,
+  });
+  return new THREE.Points(geo, mat);
+}
+
+// Nebula blu-viola
+const neb1 = makeNebula(2500, 1600, 0x0d0035, 0x001a4d, 10, 0.11);
+// Nebula rosso-viola più piccola
+const neb2 = makeNebula(1200, 900,  0x2a0018, 0x0a0025, 7,  0.09);
+neb2.rotation.y = 0.8;
+scene.add(neb1, neb2);
+
+// ════════════════════════════════
+//  LUNA CON TEXTURE PROCEDURALE
+// ════════════════════════════════
+function buildMoonTexture(size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+
+  ctx.fillStyle = '#787878';
+  ctx.fillRect(0, 0, size, size);
+
+  // Noise multi-scala (5 ottave)
+  for (let layer = 0; layer < 5; layer++) {
+    const scale    = [1, 2, 4, 8, 16][layer];
+    const alpha    = [0.33, 0.2, 0.13, 0.08, 0.05][layer];
+    const cell     = size / (6 * scale);
+    for (let x = 0; x < size; x += cell) {
+      for (let y = 0; y < size; y += cell) {
+        const l = Math.floor(Math.random() * 70 + 88);
+        ctx.fillStyle = `rgba(${l},${l},${l},${alpha})`;
+        ctx.fillRect(x, y, cell+1, cell+1);
+      }
+    }
+  }
+
+  // Mari lunari (zone scure grandi)
+  for (let i = 0; i < 6; i++) {
+    const mx = Math.random()*size, my = Math.random()*size;
+    const mr = Math.random()*size*0.12 + size*0.04;
+    const mg = ctx.createRadialGradient(mx,my,0, mx,my,mr);
+    mg.addColorStop(0,   'rgba(35,35,45,0.5)');
+    mg.addColorStop(0.5, 'rgba(55,55,65,0.25)');
+    mg.addColorStop(1,   'rgba(75,75,85,0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath(); ctx.arc(mx,my,mr,0,Math.PI*2); ctx.fill();
+  }
+
+  // Crateri con rim luminoso
+  for (let i = 0; i < 130; i++) {
+    const cx = Math.random()*size, cy = Math.random()*size;
+    const r  = Math.random()*size*0.032 + size*0.003;
+    const g  = ctx.createRadialGradient(cx,cy,0, cx,cy,r);
+    g.addColorStop(0,    'rgba(45,45,50,0.72)');
+    g.addColorStop(0.6,  'rgba(95,95,100,0.3)');
+    g.addColorStop(1,    'rgba(135,135,140,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
+    const rim = ctx.createRadialGradient(cx,cy,r*0.78, cx,cy,r*1.18);
+    rim.addColorStop(0,   'rgba(215,215,215,0)');
+    rim.addColorStop(0.5, 'rgba(215,215,215,0.2)');
+    rim.addColorStop(1,   'rgba(215,215,215,0)');
+    ctx.fillStyle = rim;
+    ctx.beginPath(); ctx.arc(cx,cy,r*1.18,0,Math.PI*2); ctx.fill();
+  }
+
+  // Terminatore (ombra laterale)
+  const term = ctx.createLinearGradient(size*0.5, 0, size*0.95, 0);
+  term.addColorStop(0, 'rgba(0,0,0,0)');
+  term.addColorStop(1, 'rgba(0,0,15,0.62)');
+  ctx.fillStyle = term; ctx.fillRect(0,0,size,size);
+
+  // Highlight
+  const hl = ctx.createRadialGradient(size*0.36,size*0.33,0, size*0.5,size*0.5,size*0.62);
+  hl.addColorStop(0,   'rgba(255,255,240,0.13)');
+  hl.addColorStop(0.4, 'rgba(0,0,0,0)');
+  hl.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.fillStyle = hl; ctx.fillRect(0,0,size,size);
+
+  return new THREE.CanvasTexture(c);
+}
+
+const moonTex = buildMoonTexture(2048);
+const moon    = new THREE.Mesh(
+  new THREE.SphereGeometry(65, 80, 80),
+  new THREE.MeshStandardMaterial({
+    map: moonTex, bumpMap: moonTex, bumpScale: 2.5,
+    roughness: 0.93, metalness: 0.0
+  })
+);
+moon.position.set(-30, 140, -130);
+scene.add(moon);
+
+// Halo/glow attorno alla luna
+const halo = new THREE.Mesh(
+  new THREE.SphereGeometry(80, 32, 32),
+  new THREE.MeshBasicMaterial({
+    color: 0x7788bb, transparent: true, opacity: 0.045,
+    side: THREE.BackSide, depthWrite: false, blending: THREE.AdditiveBlending
+  })
+);
+halo.position.copy(moon.position);
+scene.add(halo);
+
+// Luci
+const sunLight = new THREE.DirectionalLight(0xfff2d8, 2.9);
+sunLight.position.set(-180, 110, 320);
+scene.add(sunLight);
+scene.add(new THREE.AmbientLight(0x080818, 1.0));
+
+// ════════════════════════════════
+//  STANZE / TRACCE
+// ════════════════════════════════
+const roomData = [
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=4278547696/transparent=true/", name: "TRACCIA 01" },
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=2514035959/transparent=true/", name: "TRACCIA 02" },
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=1179038378/transparent=true/", name: "TRACCIA 03" },
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=3414898632/transparent=true/", name: "TRACCIA 04" },
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=910903943/transparent=true/",  name: "TRACCIA 05" },
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=3631551760/transparent=true/", name: "TRACCIA 06" },
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=3763443351/transparent=true/", name: "TRACCIA 07" },
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=2965239961/transparent=true/", name: "TRACCIA 08" },
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=3817968572/transparent=true/", name: "TRACCIA 09" },
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=2327832553/transparent=true/", name: "TRACCIA 10" },
+  { url: "https://bandcamp.com/EmbeddedPlayer/album=3440795676/size=large/bgcol=000000/linkcol=ffffff/tracklist=false/track=2904089528/transparent=true/", name: "TRACCIA 11" },
+];
+
+const roomColors = [
+  0x4488ff, 0xff4466, 0x44ffaa, 0xffaa44, 0xaa44ff,
+  0xff44ff, 0x44ffff, 0xffff44, 0xff8844, 0x44ff88, 0x8844ff
+];
+
+const rooms = [];
+roomData.forEach((data, i) => {
+  // Distribuzione a spirale allargata
+  const angle  = (i / roomData.length) * Math.PI * 2 * 1.8 + 0.3;
+  const radius = 55 + i * 16 + (Math.random()-0.5) * 22;
+  const x = Math.cos(angle) * radius + (Math.random()-0.5) * 18;
+  const z = Math.sin(angle) * radius + (Math.random()-0.5) * 18;
+  const size = 10;
+  const col = new THREE.Color(roomColors[i]);
+
+  // Wireframe icosaedrico
+  const mat = new THREE.MeshBasicMaterial({
+    color: col, wireframe: true, transparent: true, opacity: 0.3
+  });
+  const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(size, 1), mat);
+  mesh.position.set(x, 4, z);
+  scene.add(mesh);
+
+  // Glow sferico
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: col, transparent: true, opacity: 0.06,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const core = new THREE.Mesh(new THREE.SphereGeometry(size * 1.2, 16, 16), coreMat);
+  core.position.copy(mesh.position);
+  scene.add(core);
+
+  // Particelle orbitanti
+  const pCount = 50;
+  const pPos   = new Float32Array(pCount * 3);
+  for (let p = 0; p < pCount; p++) {
+    const t = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1);
+    const r = size * (1.4 + Math.random() * 0.9);
+    pPos[p*3]   = x + r*Math.sin(ph)*Math.cos(t);
+    pPos[p*3+1] = 4 + r*Math.sin(ph)*Math.sin(t);
+    pPos[p*3+2] = z + r*Math.cos(ph);
+  }
+  const pGeo = new THREE.BufferGeometry();
+  pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+  scene.add(new THREE.Points(pGeo, new THREE.PointsMaterial({
+    color: col, size: 0.55, transparent: true, opacity: 0.45,
+    blending: THREE.AdditiveBlending, depthWrite: false, map: sTex,
+  })));
+
+  rooms.push({ mesh, core, mat, coreMat, url: data.url, name: data.name, size, x, z, index: i });
+});
+
+// ════════════════════════════════
+//  INPUT
+// ════════════════════════════════
+const keys = {};
+let userInteracted = false;
+const markInteraction = () => { userInteracted = true; };
+
+document.addEventListener('keydown',   e => { keys[e.code] = true; markInteraction(); });
+document.addEventListener('keyup',     e => { keys[e.code] = false; });
+document.addEventListener('touchstart',markInteraction);
+
+// ── Mouse look con Pointer Lock ──
+let mouseYaw   = 0;
+let mousePitch = 0;
+let mouseDown  = false;
+const MOUSE_SENSITIVITY = 0.0018;
+const PITCH_LIMIT       = Math.PI * 0.42;
+
+renderer.domElement.addEventListener('click', e => {
+  if (e.target === renderer.domElement) {
+    markInteraction();
+    renderer.domElement.requestPointerLock();
+  }
+});
+
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement === renderer.domElement) {
+    document.addEventListener('mousemove', onMouseMove);
+  } else {
+    document.removeEventListener('mousemove', onMouseMove);
+  }
+});
+
+function onMouseMove(e) {
+  mouseYaw   -= e.movementX * MOUSE_SENSITIVITY;
+  mousePitch -= e.movementY * MOUSE_SENSITIVITY;
+  mousePitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, mousePitch));
+}
+
+// Tasto sinistro tenuto = avanza nella direzione della visuale
+document.addEventListener('mousedown', e => {
+  if (e.button === 0 && e.target === renderer.domElement) mouseDown = true;
+});
+document.addEventListener('mouseup', e => { if (e.button === 0) mouseDown = false; });
+
+// ── Touch controls (mobile) ──────
+// Swipe ovunque → guarda  |  Doppio tap → avanza
+const TOUCH_SENSITIVITY = 0.004;
+let touchMoving    = false;   // doppio tap: sta avanzando
+let lastTouchX     = 0;
+let lastTouchY     = 0;
+let touchActive    = false;
+
+// Doppio-tap detection
+let lastTapTime    = 0;
+const DOUBLE_TAP_MS = 280;
+
+renderer.domElement.addEventListener('touchstart', e => {
+  e.preventDefault();
+  markInteraction();
+
+  const now = Date.now();
+  const t   = e.touches[0];
+  lastTouchX = t.clientX;
+  lastTouchY = t.clientY;
+  touchActive = true;
+
+  // Doppio tap?
+  if (now - lastTapTime < DOUBLE_TAP_MS) {
+    touchMoving = true;
+    lastTapTime = 0; // reset per non triggerare di nuovo
+  } else {
+    lastTapTime = now;
+  }
+}, { passive: false });
+
+renderer.domElement.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const t  = e.touches[0];
+  const dx = t.clientX - lastTouchX;
+  const dy = t.clientY - lastTouchY;
+  lastTouchX = t.clientX;
+  lastTouchY = t.clientY;
+
+  mouseYaw   -= dx * TOUCH_SENSITIVITY;
+  mousePitch -= dy * TOUCH_SENSITIVITY;
+  mousePitch  = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, mousePitch));
+}, { passive: false });
+
+renderer.domElement.addEventListener('touchend', e => {
+  e.preventDefault();
+  touchActive = false;
+  // Doppio tap rilasciato: smette di avanzare
+  if (touchMoving && e.touches.length === 0) {
+    touchMoving = false;
+  }
+}, { passive: false });
+
+// Indicatore visivo doppio-tap (flash sottile)
+const tapHint = document.createElement('div');
+tapHint.style.cssText = `
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  color:rgba(255,255,255,0.35); font-family:'Courier New',monospace;
+  font-size:10px; letter-spacing:4px; text-transform:uppercase;
+  pointer-events:none; opacity:0; transition:opacity 0.3s;
+  text-shadow: 0 0 12px rgba(255,255,255,0.4);
+`;
+tapHint.textContent = 'doppio tap — avanza';
+document.body.appendChild(tapHint);
+
+// Mostra hint solo la prima volta su touch device
+if ('ontouchstart' in window) {
+  setTimeout(() => {
+    tapHint.style.opacity = '1';
+    setTimeout(() => { tapHint.style.opacity = '0'; }, 3000);
+  }, 1200);
+}
+
+// ════════════════════════════════
+//  PLAYER + AUTOPLAY
+// ════════════════════════════════
+const overlay        = document.getElementById('playerOverlay');
+const bcPlayer       = document.getElementById('bcPlayer');
+const closeBtn       = document.getElementById('closeBtn');
+const trackLabel     = document.getElementById('trackLabel');
+const trackNum       = document.getElementById('trackNum');
+const autoplayNotice = document.getElementById('autoplayNotice');
+
+let activeRoom    = null;
+let labelTimeout  = null;
+let autoplayTimer = null;
+
+function openPlayer(room) {
+  // Riavvia animazione
+  overlay.style.animation = 'none';
+  overlay.offsetHeight;
+  overlay.style.animation = '';
+  overlay.style.display   = 'block';
+
+  // Bandcamp large embed con autoplay=1
+  bcPlayer.src = room.url + '&autoplay=1';
+
+  trackNum.textContent  = `TRACK ${String(room.index+1).padStart(2,'0')} / ${roomData.length}`;
+  trackLabel.textContent = room.name;
+  trackLabel.classList.add('visible');
+  clearTimeout(labelTimeout);
+  labelTimeout = setTimeout(() => trackLabel.classList.remove('visible'), 3500);
+
+  // Fallback postMessage dopo caricamento iframe
+  clearTimeout(autoplayTimer);
+  autoplayTimer = setTimeout(() => {
+    try { bcPlayer.contentWindow.postMessage('{"method":"play"}', '*'); } catch(e) {}
+    if (!userInteracted) {
+      autoplayNotice.style.display = 'block';
+      setTimeout(() => { autoplayNotice.style.display = 'none'; }, 5000);
+    }
+  }, 900);
+}
+
+// Spazio = play forzato sull'iframe
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && activeRoom) {
+    e.preventDefault();
+    try { bcPlayer.contentWindow.postMessage('{"method":"play"}', '*'); } catch(e) {}
+    autoplayNotice.style.display = 'none';
+  }
+});
+
+closeBtn.onclick = () => {
+  overlay.style.display = 'none';
+  try { bcPlayer.contentWindow.postMessage('{"method":"pause"}', '*'); } catch(e) {}
+  setTimeout(() => { bcPlayer.src = ''; }, 200);
+  activeRoom = null;
+};
+
+// ════════════════════════════════
+//  LOOP
+// ════════════════════════════════
+let time = 0;
+
+// Scintillio: aggiorna opacity stars3 ogni ~20 frame
+let shimmerTimer = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  time      += 0.008;
+  shimmerTimer++;
+
+  // Movimento — combina tastiera e mouse
+  const speed = 0.48, rot = 0.022;
+  if (keys['ArrowLeft']  || keys['KeyA']) mouseYaw += rot;
+  if (keys['ArrowRight'] || keys['KeyD']) mouseYaw -= rot;
+
+  // Applica rotazione: yaw sull'asse Y, pitch sull'asse X
+  camera.rotation.order = 'YXZ';
+  camera.rotation.y = mouseYaw;
+  camera.rotation.x = mousePitch;
+
+  // Avanzamento: WASD/frecce SU-GIÙ oppure tasto sinistro tenuto oppure doppio tap touch
+  const moveForward  = keys['ArrowUp']   || keys['KeyW'] || mouseDown || touchMoving;
+  const moveBackward = keys['ArrowDown'] || keys['KeyS'];
+  if (moveForward) {
+    camera.position.x -= Math.sin(mouseYaw) * Math.cos(mousePitch) * speed;
+    camera.position.z -= Math.cos(mouseYaw) * Math.cos(mousePitch) * speed;
+  }
+  if (moveBackward) {
+    camera.position.x += Math.sin(mouseYaw) * Math.cos(mousePitch) * speed;
+    camera.position.z += Math.cos(mouseYaw) * Math.cos(mousePitch) * speed;
+  }
+
+  // Fluttuazione camera (zero gravity)
+  camera.position.y = 4 + Math.sin(time * 0.38) * 0.55;
+
+  // Rotazione lenta stelle (cosmo che gira)
+  stars1.rotation.y  =  time * 0.003;
+  stars2.rotation.y  =  time * 0.005;
+  stars3.rotation.y  =  time * 0.008;
+  neb1.rotation.y    = -time * 0.002;
+  neb2.rotation.y    =  time * 0.003;
+
+  // Scintillio stars3: variazione sinusoidale opacity
+  stars3.material.opacity = 0.8 + Math.sin(time * 2.1) * 0.12 + Math.sin(time * 3.7) * 0.06;
+
+  // Luna
+  moon.rotation.y = time * 0.022;
+  halo.rotation.y = -time * 0.008;
+
+  // Stanze
+  rooms.forEach((room, i) => {
+    const dx   = camera.position.x - room.x;
+    const dz   = camera.position.z - room.z;
+    const dist = Math.sqrt(dx*dx + dz*dz);
+
+    const pulse = 1 + Math.sin(time * 1.1 + i * 1.15) * 0.07;
+    room.mesh.scale.setScalar(pulse);
+    room.core.scale.setScalar(pulse * (1 + Math.sin(time * 0.75 + i) * 0.1));
+
+    const prox = Math.max(0, 1 - dist / 90);
+    room.mat.opacity     = 0.1 + prox * 0.68;
+    room.coreMat.opacity = 0.02 + prox * 0.2;
+
+    room.mesh.rotation.x = time * (0.18 + i * 0.025);
+    room.mesh.rotation.z = time * (0.12 + i * 0.018);
+
+    if (dist < room.size * 1.4 && activeRoom !== room) {
+      activeRoom = room;
+      openPlayer(room);
+    }
+  });
+
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
